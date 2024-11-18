@@ -1,0 +1,44 @@
+#!/bin/bash
+
+# Перевірка чи скрипт запущено з правами root
+if [ "$EUID" -ne 0 ]; then 
+    echo "Будь ласка, запустіть скрипт з правами root"
+    exit 1
+fi
+
+# Встановлення iptables та залежностей
+yum install -y iptables iptables-services
+
+# Запуск сервісу iptables
+systemctl start iptables
+systemctl enable iptables
+
+# Очищення існуючих правил
+iptables -F
+
+# Встановлення базових правил
+iptables -P INPUT ACCEPT
+iptables -P FORWARD ACCEPT
+iptables -P OUTPUT ACCEPT
+
+# Дозвіл для localhost
+iptables -A INPUT -i lo -j ACCEPT
+iptables -A OUTPUT -o lo -j ACCEPT
+
+# Дозвіл встановлених з'єднань
+iptables -A INPUT -m state --state ESTABLISHED,RELATED -j ACCEPT
+
+# Блокування порту 8089 для всіх, крім LBR хоста
+iptables -A INPUT -p tcp --dport 8089 -s 172.16.238.14 -j ACCEPT
+iptables -A INPUT -p tcp --dport 8089 -j DROP
+
+# Збереження правил
+service iptables save
+
+# Перевірка правил
+iptables -L -v -n
+
+# LOG --log-prefix "Port 8087 Blocked: " - додати логування до правила
+# sudo tail -f /var/log/syslog - перегляд логування
+# 
+ 
