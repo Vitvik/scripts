@@ -1,0 +1,297 @@
+Увімкнення NAT на Debian:
+# Редагування файлу /etc/sysctl.conf
+sudo vi /etc/sysctl.conf
+
+# Додайте або розкоментуйте наступні рядки:
+net.ipv4.ip_forward=1
+
+# Застосування змін
+sudo sysctl -p
+--------------------------------------------------------------------------------
+
+Налаштування iptables для NAT:
+sudo apt-get update
+sudo apt-get install iptables-persistent
+
+sudo iptables -F
+sudo iptables -t nat -F
+sudo iptables -X
+
+# Дозвіл NAT для внутрішньої мережі
+#sudo iptables -t nat -A POSTROUTING -s 192.168.0.0/24 -o enX0 -j MASQUERADE
+sudo iptables -t nat -A POSTROUTING -o eth0 -j MASQUERADE
+sudo iptables -A FORWARD -i eth1 -j ACCEPT
+sudo iptables -A FORWARD -o eth1 -j ACCEPT
+
+
+#Перевірка
+sudo iptables -t nat -L
+
+
+# Збереження правил
+sudo netfilter-persistent save
+sudo netfilter-persistent reload
+--------------------------------------------------------------------------------
+
+sudo apt-get install isc-dhcp-server
+
+# Налаштуйте конфігурацію DHCP
+# Редагування файлу /etc/dhcp/dhcpd.conf
+sudo vi /etc/dhcp/dhcpd.conf
+
+authoritative; - uncoment
+
+subnet 192.168.0.0 netmask 255.255.255.0 {
+  range 192.168.0.150 192.168.0.200;
+  option routers 192.168.0.100;
+  option domain-name-servers 192.168.0.100;
+  option domain-name "linuxlab.local";
+  option routers 192.168.0.100;
+  option broadcast-address 192.168.0.255;
+}
+# Визначте інтерфейс для DHCP
+# Редагування файлу /etc/default/isc-dhcp-server
+sudo vi /etc/default/isc-dhcp-server
+
+INTERFACESv4="ens6"
+
+sudo systemctl start isc-dhcp-server
+sudo systemctl enable isc-dhcp-server
+sudo systemctl restart isc-dhcp-server
+
+#перевірка оренди адрес
+cat /var/lib/dhcp/dhcpd.leases
+
+#Configure DHCP Client 
+#Редагування файлу мережевої конфігурації:
+
+sudo vi /etc/netplan/01_config.yaml
+
+network:
+  version: 2
+  renderer: networkd
+  ethernets:
+    ens5:  # LAN Interface
+      dhcp4: true
+      dhcp6: false
+      dhcp4-overrides:
+        use-dns: true
+        use-domains: true
+
+sudo netplan generate
+sudo netplan apply
+
+
+#To disable cloud-init's
+# network configuration capabilities, write a file
+# /etc/cloud/cloud.cfg.d/99-disable-network-config.cfg with the following:
+# network: {config: disabled}
+sudo echo "network: {config: disabled}" > /etc/cloud/cloud.cfg.d/99-disable-network-config.cfg
+
+#Перевірка DNS: 
+resolvectl status
+#Примусове налаштування клієнтів для використання вашого DHCP-сервера
+#На клієнтах Ubuntu:
+#Додайте або змініть наступний рядок
+sudo vi /etc/dhcp/dhclient.conf
+
+supersede domain-name-servers 192.168.0.100;
+prepend domain-name-servers 192.168.0.100;
+request subnet-mask, broadcast-address, time-offset, routers,
+        domain-name, domain-name-servers, host-name, dhcp6.domain-search,
+        dhcp6.fqdn, dhcp6.name-servers, netbios-name-servers;
+
+
+#Перезапустіть DHCP-клієнт
+
+sudo dhclient -r ens5
+sudo dhclient -v ens5
+
+
+cat /etc/resolv.conf
+#Переконайтеся, що nameserver вказує на 192.168.0.100.
+
+--------------------------------------------------------------------------------
+
+# Встановлення BIND9
+sudo apt install bind9 dnsutils bind9-doc
+
+# Основний конфігураційний файл
+sudo vi /etc/bind/named.conf.options
+
+# Додати наступні налаштування:
+options {
+    directory "/var/cache/bind";
+    
+    listen-on { 
+        127.0.0.1; 
+        192.168.0.100;  // IP вашого серверу в локальній мережі
+    };
+    
+    allow-query {
+        localhost;
+        192.168.0.0/16;  // Ваша локальна мережа
+    };
+    
+    forwarders {
+        8.8.8.8;  // Google DNS
+        1.1.1.1;  // Cloudflare DNS
+    };
+    
+    recursion yes;
+    dnssec-validation auto;
+}
+
+
+# Створення файлу зони
+sudo vi /etc/bind/db.linuxlab.local
+
+# Приклад конфігурації зони
+$TTL 604800
+@ IN SOA gateway.linuxlab.local. root.gateway.linuxlab.local. (
+    1 ; Serial
+    604800 ; Refresh
+    86400 ; Retry
+    2419200 ; Expire
+    604800 ) ; Negative Cache TTL
+;
+@ IN NS gateway.linuxlab.local.
+gateway IN A 192.168.0.100
+client1 IN A 192.168.0.50
+
+# Створення зворотної зони (реверсної)
+sudo vi /etc/bind/db.linuxlab.local.reverse
+
+# Приклад конфігурації зони
+$TTL 604800
+@ IN SOA gateway.linuxlab.local. root.gateway.linuxlab.local. (
+    1 ; Serial
+    604800 ; Refresh
+    86400 ; Retry
+    2419200 ; Expire
+    604800 ) ; Negative Cache TTL
+;
+@ IN NS gateway.linuxlab.local.
+100 IN PTR gateway.linuxlab.local.
+50 IN PTR client1.linuxlab.local.
+
+# Налаштування локальної зони
+sudo vi /etc/bind/named.conf.local
+
+# Додати конфігурацію локальної зони
+zone "linuxlab.local" {
+    type master;
+    file "/etc/bind/db.linuxlab.local";
+};
+
+zone "0.168.192.in-addr.arpa" {
+    type master;
+    file "/etc/bind/db.linuxlab.local.reverse";
+};
+
+
+# Перевірка конфігурації BIND
+sudo named-checkconf
+sudo named-checkzone linuxlab.local /etc/bind/db.linuxlab.local
+
+#додатково перевірити 
+cat /etc/resolv.conf
+
+nameserver 127.0.0.1
+search linuxlab.local
+
+# Restart служб
+sudo systemctl restart bind9
+sudo systemctl restart networking  # або netplan apply на клієнтах
+--------------------------------------------------------------------------------
+#Додаткові налаштування DHCP ключами rndc-conf
+sudo rndc-confgen
+
+sudo vi /etc/bind/rndc.conf
+
+# Start of rndc.conf
+key "rndc-key" {
+	algorithm hmac-sha256;
+	secret "XpqX/dYEwoa11YpkTfzGFO1y8wZwsbYQE5tZdsBz6ak=";
+};
+
+options {
+	default-key "rndc-key";
+	default-server 127.0.0.1;
+	default-port 953;
+};
+# End of rndc.conf
+
+#Важливо дозволити звернення localhost
+
+sudo iptables -A INPUT -i lo -j ACCEPT
+
+
+
+--------------------------------------------------------------------------------
+Налаштування мережі на client
+# Редагування netplan
+sudo vi /etc/netplan/01-network-manager-all.yaml
+
+# Приклад конфігурації:
+network:
+  version: 2
+  renderer: networkd
+  ethernets:
+    eth0:
+      addresses: 
+        - 192.168.0.110/24
+      routes:
+        - to: 0.0.0.0/0
+          via: 192.168.0.100
+      nameservers:
+        addresses: 
+          - 192.168.0.100
+        search: [linuxlab.local]  
+
+
+sudo netplan generate
+sudo netplan apply   
+
+sudo ip route del default via 192.168.0.1 # якщо потрібно
+--------------------------------------------------------------------------------
+# Налаштування proxy servers SQUID
+sudo apt-get install squid
+
+sudo /usr/sbin/squid -v
+
+sudo cp /etc/squid/squid.conf /etc/squid/squid.conf.backup
+
+sudo vi /etc/squid/squid.conf
+
+acl localnet src 192.168.0.0/24
+
+http_accessallow localnet
+
+http_port 192.168.0.100:3128 intercep
+
+
+--------------------------------------------------------------------------------
+
+ssh -i "serv_tren.pem" ubuntu@192.168.0.50
+
+scp -i "../serv_tren.pem" ../serv_tren.pem admin@54.72.114.59:/home/admin
+scp -i "labs/serv_tren.pem" admin@52.48.72.215:/home/admin/iptables.backap .
+
+
+sudo tcpdump -i enX0 icmp
+
+
+sudo iptables -A INPUT -m state --state RELATED,ESTABLISHED -j ACCEPT
+sudo iptables -A FORWARD -m state --state RELATED,ESTABLISHED -j ACCEPT
+
+sudo iptables -A FORWARD -p tcp -m multiport --port 53,80,8080,443,110,25,21 -s 192.168.0.0/24 -j ACCEPT
+
+sudo iptables -t nat -A PREROUTING -i ens5 -p tcp -m tcp --dport 60500 -j DNAT --to-destination 192.168.0.60:80
+sudo iptables -A FORWARD -i ens5 -p tcp --dport 80 -j ACCEPT
+
+iptables-save > /etc/iptables.rules
+iptables-restore < /etc/iptables.rules
+
+
+
